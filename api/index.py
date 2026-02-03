@@ -1,71 +1,72 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, render_template, request, jsonify
 import requests
 from bs4 import BeautifulSoup
-import urllib3
-
-# Silencio total para no dejar rastros en logs
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Importamos la función que arma la plantilla oficial con el QR
+from .reconstructor import generar_html_constancia
 
 app = Flask(__name__, template_folder='../templates')
 
 @app.route('/')
-def home():
+def index():
     return render_template('index.html')
 
-@app.route('/api/extraer')
+@app.route('/extraer', methods=['POST'])
 def extraer():
-    rfc = request.args.get('rfc', '').upper().strip()
-    idcif = request.args.get('idcif', '').strip()
-
-    if not rfc or not idcif:
-        return jsonify({"status": "error"}), 400
-
-    # URL Móvil que validamos manualmente
-    url_sat = f"https://siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf?D1=10&D2=1&D3={idcif}_{rfc}"
-    
-    # Cambiamos a un motor de renderizado más robusto para evitar el 404
-    # Este puente simula un navegador completo
-    puente_ninja = f"https://api.allorigins.win/get?url={requests.utils.quote(url_sat)}"
-
     try:
-        # Iniciamos sesión efímera
-        with requests.Session() as s:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Connection': 'close' # Muerte inmediata tras recibir datos
-            }
-            
-            # El intento debe ser rápido (timeout corto) para no ser rastreado
-            response = s.get(puente_ninja, headers=headers, timeout=10)
-            
-            if response.status_code != 200:
-                return jsonify({"status": "terminated"}), 404
+        data = request.json
+        rfc_usuario = data.get('rfc', '').upper()
+        id_cif = data.get('id_cif', '')
 
-            contenido = response.json().get('contents', '')
-            
-            if not contenido or "Error 404" in contenido:
-                return jsonify({"status": "not_found"}), 404
+        if not rfc_usuario or not id_cif:
+            return jsonify({"status": "error", "message": "RFC e ID CIF son requeridos"}), 400
 
-            soup = BeautifulSoup(contenido, 'html.parser')
-            datos = {}
+        # URL oficial del validador del SAT usando los parámetros D3 (idCIF_RFC)
+        url = f"https://siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf?D1=10&D2=1&D3={id_cif}_{rfc_usuario}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
 
-            # Buscamos patrones de datos fiscales
-            for span in soup.find_all(['span', 'td']):
-                texto = span.get_text(strip=True)
-                if ":" in texto:
-                    partes = texto.split(":", 1)
-                    if len(partes) > 1 and partes[1].strip():
-                        datos[partes[0].strip()] = partes[1].strip()
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code != 200:
+            return jsonify({"status": "error", "message": "No se pudo conectar con el servidor del SAT"}), 500
 
-            if not datos:
-                return jsonify({"status": "ghost_mode"}), 404
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Diccionario para almacenar los datos extraídos
+        datos = {
+            "RFC": rfc_usuario,
+            "id_cif": id_cif  # Guardamos esto para que el Reconstructor genere el QR
+        }
+        
+        # Buscamos las tablas de datos en la respuesta del SAT
+        tablas = soup.find_all('table')
+        if not tablas:
+            return jsonify({"status": "error", "message": "No se encontró información. Revisa que el ID CIF sea correcto."}), 404
 
-            # Entregamos y el proceso muere
-            return jsonify({"status": "success", "datos": datos})
+        for tabla in tablas:
+            filas = tabla.find_all('tr')
+            for fila in filas:
+                columnas = fila.find_all('td')
+                if len(columnas) >= 2:
+                    clave = columnas[0].get_text(strip=True).replace(':', '')
+                    valor = columnas[1].get_text(strip=True)
+                    if clave and valor:
+                        datos[clave] = valor
 
-    except:
-        # Muere en el intento sin revelar por qué
-        return jsonify({"status": "failed"}), 500
+        # --- LLAMADA AL RECONSTRUCTOR ---
+        # Pasamos el diccionario 'datos' para que lo acomode en la plantilla.png que enviaste
+        html_oficial = generar_html_constancia(datos)
 
-app = app
+        return jsonify({
+            "status": "success",
+            "datos": datos,
+            "html_reconstruido": html_oficial
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Error en el servidor: {str(e)}"}), 500
+
+# Configuración necesaria para despliegue en Vercel
+app.debug = False
