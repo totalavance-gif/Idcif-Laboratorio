@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template
+25from flask import Flask, request, jsonify, render_template
 import requests
 from bs4 import BeautifulSoup
 import urllib3
@@ -21,7 +21,7 @@ def extraer():
         return jsonify({"status": "error", "detalle": "Faltan datos"}), 400
 
     # URL ORIGINAL DEL SAT
-    url_sat = f"https://siat.sat.gob.mx/app/qr/faces/pages/rest/consultarDatosArt79.jsf?p1={idcif}&p2={rfc}"
+    url_sat = f"https://siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf?p1={idcif}&p2={rfc}"
     
     # --- CONFIGURACIÓN DEL PUENTE (CORS-ANYWHERE / PROXY) ---
     # Usamos un servicio de proxy para que Vercel no se bloquee con el SSL del SAT
