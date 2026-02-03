@@ -1,9 +1,9 @@
-25from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template
 import requests
 from bs4 import BeautifulSoup
 import urllib3
 
-# Desactivar advertencias de seguridad
+# Silenciamos cualquier advertencia para no generar logs innecesarios
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__, template_folder='../templates')
@@ -18,51 +18,51 @@ def extraer():
     idcif = request.args.get('idcif', '').strip()
 
     if not rfc or not idcif:
-        return jsonify({"status": "error", "detalle": "Faltan datos"}), 400
+        return jsonify({"status": "error"}), 400
 
-    # URL ORIGINAL DEL SAT
-    url_sat = f"https://siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf?D1=10&D2=1&D3=22020213087_GUCK920822MB3"
-    
-    # --- CONFIGURACIÓN DEL PUENTE (CORS-ANYWHERE / PROXY) ---
-    # Usamos un servicio de proxy para que Vercel no se bloquee con el SSL del SAT
-    puente = "https://api.allorigins.win/get?url="
-    url_final = f"{puente}{requests.utils.quote(url_sat)}"
+    # URL Móvil Efímera
+    url_sat = f"https://siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf?D1=10&D2=1&D3={idcif}_{rfc}"
+    proxy_url = f"https://api.allorigins.win/get?url={requests.utils.quote(url_sat)}"
 
+    # Iniciamos y matamos la sesión en un solo bloque para no dejar huella
     try:
-        # Llamamos al puente en lugar de al SAT directamente
-        response = requests.get(url_final, timeout=25)
-        
-        if response.status_code != 200:
-            return jsonify({"status": "error", "detalle": "El puente no pudo conectar con el SAT"}), 500
+        with requests.Session() as s:
+            # Headers para parecer un visitante fugaz
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X)',
+                'Connection': 'close' # Le dice al servidor: "En cuanto me des esto, olvídame"
+            }
+            
+            response = s.get(proxy_url, headers=headers, timeout=15)
+            
+            if response.status_code != 200:
+                return jsonify({"status": "fail"}), 404
 
-        # AllOrigins devuelve un JSON con el HTML dentro del campo 'contents'
-        json_data = response.json()
-        html_sat = json_data.get('contents', '')
+            html = response.json().get('contents', '')
+            
+            # Si el contenido está vacío o es un error, el proceso muere aquí
+            if not html or "Error 404" in html:
+                return jsonify({"status": "denied"}), 404
 
-        if not html_sat:
-            return jsonify({"status": "error", "detalle": "No se recibió respuesta del SAT"}), 404
+            soup = BeautifulSoup(html, 'html.parser')
+            datos = {}
 
-        # Analizamos el HTML recuperado a través del puente
-        soup = BeautifulSoup(html_sat, 'html.parser')
-        celdas = soup.find_all('td')
-        datos_extraidos = {}
-        
-        for i in range(0, len(celdas) - 1, 2):
-            label = celdas[i].get_text(strip=True).replace(":", "")
-            valor = celdas[i+1].get_text(strip=True)
-            if label and valor:
-                datos_extraidos[label] = valor
+            # Extracción rápida
+            for el in soup.find_all(['span', 'td']):
+                txt = el.get_text(strip=True)
+                if ":" in txt:
+                    p = txt.split(":", 1)
+                    if len(p) > 1 and p[1].strip():
+                        datos[p[0].strip()] = p[1].strip()
 
-        if not datos_extraidos:
-            return jsonify({"status": "error", "detalle": "Datos no encontrados (Revisa RFC/IDCIF)"}), 404
+            if not datos:
+                return jsonify({"status": "empty"}), 404
 
-        return jsonify({
-            "status": "success",
-            "datos": datos_extraidos,
-            "metodo": "Puente SSL Bypass"
-        })
+            # Entregamos y el proceso termina (muere)
+            return jsonify({"status": "success", "datos": datos})
 
-    except Exception as e:
-        return jsonify({"status": "error", "detalle": f"Error en el puente: {str(e)}"}), 500
+    except:
+        # Si algo falla, muere en silencio sin dar detalles técnicos
+        return jsonify({"status": "terminated"}), 500
 
 app = app
