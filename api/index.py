@@ -1,7 +1,8 @@
 from flask import Flask, render_template, request, jsonify
 import requests
 from bs4 import BeautifulSoup
-# Importamos la función que arma la plantilla oficial con el QR
+import datetime
+# Importamos tu reconstructor que armará la plantilla visual
 from .reconstructor import generar_html_constancia
 
 app = Flask(__name__, template_folder='../templates')
@@ -14,59 +15,63 @@ def index():
 def extraer():
     try:
         data = request.json
-        rfc_usuario = data.get('rfc', '').upper()
-        id_cif = data.get('id_cif', '')
+        rfc_usuario = data.get('rfc', '').upper().strip()
+        id_cif = data.get('id_cif', '').strip()
 
         if not rfc_usuario or not id_cif:
-            return jsonify({"status": "error", "message": "RFC e ID CIF son requeridos"}), 400
+            return jsonify({"status": "error", "message": "RFC e ID CIF son obligatorios"}), 400
 
-        # URL oficial del validador del SAT usando los parámetros D3 (idCIF_RFC)
+        # Construcción de URL oficial para validación QR
+        # D1=10 (Tipo), D2=1 (Modo), D3=idCIF_RFC
         url = f"https://siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf?D1=10&D2=1&D3={id_cif}_{rfc_usuario}"
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1'
         }
 
+        # Petición al SAT con tiempo de espera extendido
         response = requests.get(url, headers=headers, timeout=15)
         
         if response.status_code != 200:
-            return jsonify({"status": "error", "message": "No se pudo conectar con el servidor del SAT"}), 500
+            return jsonify({"status": "error", "message": "El SAT no responde. Intenta más tarde."}), 500
 
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Diccionario para almacenar los datos extraídos
-        datos = {
+        # Diccionario base con los datos de entrada
+        datos_extraidos = {
             "RFC": rfc_usuario,
-            "id_cif": id_cif  # Guardamos esto para que el Reconstructor genere el QR
+            "id_cif": id_cif,
+            "Fecha de Emisión": datetime.datetime.now().strftime("%d/%m/%Y")
         }
         
-        # Buscamos las tablas de datos en la respuesta del SAT
+        # Buscador de tablas de información
         tablas = soup.find_all('table')
         if not tablas:
-            return jsonify({"status": "error", "message": "No se encontró información. Revisa que el ID CIF sea correcto."}), 404
+            return jsonify({"status": "error", "message": "Datos no encontrados. Verifica tu ID CIF."}), 404
 
+        # Procesamos cada fila encontrada en las tablas del SAT
         for tabla in tablas:
-            filas = tabla.find_all('tr')
-            for fila in filas:
-                columnas = fila.find_all('td')
-                if len(columnas) >= 2:
-                    clave = columnas[0].get_text(strip=True).replace(':', '')
-                    valor = columnas[1].get_text(strip=True)
-                    if clave and valor:
-                        datos[clave] = valor
+            for fila in tabla.find_all('tr'):
+                cols = fila.find_all('td')
+                if len(cols) >= 2:
+                    etiqueta = cols[0].get_text(strip=True).replace(':', '')
+                    valor = cols[1].get_text(strip=True)
+                    if etiqueta and valor:
+                        datos_extraidos[etiqueta] = valor
 
-        # --- LLAMADA AL RECONSTRUCTOR ---
-        # Pasamos el diccionario 'datos' para que lo acomode en la plantilla.png que enviaste
-        html_oficial = generar_html_constancia(datos)
+        # --- GENERACIÓN DE LA PLANTILLA RECONSTRUIDA ---
+        # Aquí enviamos los datos para que el reconstructor los acomode en la plantilla.png
+        html_plantilla = generar_html_constancia(datos_extraidos)
 
         return jsonify({
             "status": "success",
-            "datos": datos,
-            "html_reconstruido": html_oficial
+            "datos": datos_extraidos,
+            "html_reconstruido": html_plantilla
         })
 
     except Exception as e:
-        return jsonify({"status": "error", "message": f"Error en el servidor: {str(e)}"}), 500
+        return jsonify({"status": "error", "message": f"Fallo en conexión: {str(e)}"}), 500
 
-# Configuración necesaria para despliegue en Vercel
+# Requerido para Vercel
 app.debug = False
+                        
