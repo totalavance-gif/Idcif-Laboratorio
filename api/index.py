@@ -3,7 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 import urllib3
 
-# Deshabilitar alertas de seguridad para la prueba
+# Desactivar advertencias de seguridad
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__, template_folder='../templates')
@@ -14,74 +14,55 @@ def home():
 
 @app.route('/api/extraer')
 def extraer():
-    # Aunque ya los tenemos, los pedimos del formulario para que sea funcional
     rfc = request.args.get('rfc', '').upper().strip()
     idcif = request.args.get('idcif', '').strip()
 
     if not rfc or not idcif:
-        return jsonify({"status": "error", "detalle": "Ingresa RFC e IDCIF"}), 400
+        return jsonify({"status": "error", "detalle": "Faltan datos"}), 400
 
-    # URL MÓVIL (La que sí te abre en el navegador)
-    url_movil = f"https://siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf?D1=10&D2=1&D3={idcif}_{rfc}"
+    # URL ORIGINAL DEL SAT
+    url_sat = f"https://siat.sat.gob.mx/app/qr/faces/pages/rest/consultarDatosArt79.jsf?p1={idcif}&p2={rfc}"
     
+    # --- CONFIGURACIÓN DEL PUENTE (CORS-ANYWHERE / PROXY) ---
+    # Usamos un servicio de proxy para que Vercel no se bloquee con el SSL del SAT
+    puente = "https://api.allorigins.win/get?url="
+    url_final = f"{puente}{requests.utils.quote(url_sat)}"
+
     try:
-        session = requests.Session()
-        # Headers de iPhone para forzar la respuesta móvil
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1'
-        }
-        
-        # EL PASO CRUCIAL: verify=False para saltar el error de la llave pequeña
-        response = session.get(url_movil, headers=headers, timeout=15, verify=False)
+        # Llamamos al puente en lugar de al SAT directamente
+        response = requests.get(url_final, timeout=25)
         
         if response.status_code != 200:
-            return jsonify({"status": "error", "detalle": "El SAT móvil no responde"}), 500
+            return jsonify({"status": "error", "detalle": "El puente no pudo conectar con el SAT"}), 500
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # AllOrigins devuelve un JSON con el HTML dentro del campo 'contents'
+        json_data = response.json()
+        html_sat = json_data.get('contents', '')
+
+        if not html_sat:
+            return jsonify({"status": "error", "detalle": "No se recibió respuesta del SAT"}), 404
+
+        # Analizamos el HTML recuperado a través del puente
+        soup = BeautifulSoup(html_sat, 'html.parser')
+        celdas = soup.find_all('td')
         datos_extraidos = {}
-
-        # Buscamos tablas o divs que contengan datos en la versión móvil
-        elementos = soup.find_all(['td', 'span', 'div'])
         
-        for i in range(len(elementos)):
-            texto = elementos[i].get_text(strip=True)
-            # Buscamos el patrón "Dato: Valor"
-            if ":" in texto and len(texto) < 100:
-                partes = texto.split(":", 1)
-                key = partes[0].strip()
-                val = partes[1].strip()
-                if key and val:
-                    datos_extraidos[key] = val
-                # Si el valor está en el siguiente elemento
-                elif key and i + 1 < len(elementos):
-                    val_sig = elementos[i+1].get_text(strip=True)
-                    if val_sig:
-                        datos_extraidos[key] = val_sig
+        for i in range(0, len(celdas) - 1, 2):
+            label = celdas[i].get_text(strip=True).replace(":", "")
+            valor = celdas[i+1].get_text(strip=True)
+            if label and valor:
+                datos_extraidos[label] = valor
 
-        # Si logramos entrar pero el scraping falla, devolvemos un mensaje de éxito técnico
         if not datos_extraidos:
-            return jsonify({
-                "status": "success",
-                "mensaje": "Conexión exitosa al SAT móvil",
-                "datos": {
-                    "Estado": "Página cargada",
-                    "Aviso": "Los datos están presentes pero el formato móvil es distinto al de escritorio."
-                },
-                "url": url_movil
-            })
+            return jsonify({"status": "error", "detalle": "Datos no encontrados (Revisa RFC/IDCIF)"}), 404
 
         return jsonify({
             "status": "success",
             "datos": datos_extraidos,
-            "url_oficial": url_movil
+            "metodo": "Puente SSL Bypass"
         })
 
     except Exception as e:
-        # Si esto falla, el problema es que OpenSSL en Vercel bloquea la conexión antes de que Python pueda ignorar el error
-        return jsonify({
-            "status": "error", 
-            "detalle": "Bloqueo SSL persistente en Vercel",
-            "tecnico": str(e)
-        }), 500
+        return jsonify({"status": "error", "detalle": f"Error en el puente: {str(e)}"}), 500
 
 app = app
