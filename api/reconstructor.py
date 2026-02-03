@@ -1,61 +1,62 @@
 import re
 
-def limpiar_dato(texto):
-    """Limpia el texto amontonado que envía el SAT."""
-    if not texto: return "N/A"
-    # Si detecta la palabra 'Fecha', corta el texto ahí para no arruinar el nombre
-    limpio = re.split(r'Fecha', texto, flags=re.IGNORECASE)[0]
-    return limpio.strip().upper()
+def limpiar_dato(texto, etiqueta):
+    """Limpia el texto amontonado buscando la etiqueta de fin."""
+    if not texto: return ""
+    # Corta el texto antes de la siguiente etiqueta del SAT (ej. Fecha, Municipio, etc.)
+    partes = re.split(r'(Fecha|Municipio|Colonia|Tipo|Número|CP|Nombre|Apellido)', texto, flags=re.IGNORECASE)
+    return partes[0].replace(':', '').strip().upper()
 
 def generar_html_constancia(datos):
-    """Genera la plantilla visual organizada."""
-    rfc = datos.get('RFC', 'N/A')
-    # Aplicamos la limpieza ninja a los datos amontonados de tu captura
-    nombre = limpiar_dato(datos.get('Nombre o Razón Social', datos.get('CURP', 'N/A')))
-    regimen = limpiar_dato(datos.get('Régimen', 'N/A'))
-    entidad = datos.get('Entidad Federativa', 'N/A')
+    rfc = datos.get('RFC', '')
+    id_cif = datos.get('id_cif', '') # Pasado desde el index
+    
+    # Mapeo de datos basado en tu captura de 'Datos Encontrados'
+    curp_raw = datos.get('CURP', '')
+    nombre = limpiar_dato(curp_raw.split("Nombre:")[1] if "Nombre:" in curp_raw else "", "Fecha")
+    paterno = limpiar_dato(curp_raw.split("Paterno:")[1] if "Paterno:" in curp_raw else "", "Apellido")
+    materno = limpiar_dato(curp_raw.split("Materno:")[1] if "Materno:" in curp_raw else "", "Fecha")
+    
+    # URL del QR Oficial
+    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf?D1=10%26D2=1%26D3={id_cif}_{rfc}"
 
     return f"""
-    <div id="cedula-template" style="width: 100%; max-width: 500px; margin: auto; font-family: 'Segoe UI', Roboto, sans-serif; border: 1px solid #13322b; border-radius: 8px; overflow: hidden; background: #fff; box-shadow: 0 10px 30px rgba(0,0,0,0.15);">
+    <div style="width: 100%; max-width: 750px; margin: auto; background: #fff; border: 1px solid #ccc; font-family: Arial, sans-serif; color: #000; padding: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 5px;">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b3/SAT_logo.svg/512px-SAT_logo.svg.png" style="width: 120px;">
+            <div style="text-align: center; font-weight: bold; font-size: 14px;">CONSTANCIA DE SITUACIÓN FISCAL</div>
+            <div style="text-align: right; font-size: 10px;">Lugar y Fecha de Emisión:<br><b>MÉXICO, 2026-02-03</b></div>
+        </div>
+
+        <div style="display: flex; margin-top: 15px; border: 1px solid #000;">
+            <div style="width: 40%; padding: 10px; border-right: 1px solid #000; text-align: center;">
+                <div style="font-size: 9px; font-weight: bold;">CÉDULA DE IDENTIFICACIÓN FISCAL</div>
+                <img src="{qr_url}" style="width: 130px; margin: 10px 0;">
+                <div style="font-size: 11px; font-weight: bold;">{rfc}</div>
+                <div style="font-size: 8px;">idCIF: {id_cif}</div>
+            </div>
+            <div style="width: 60%; padding: 10px; font-size: 11px;">
+                <p><b>Datos de Identificación del Contribuyente:</b></p>
+                <div style="border: 1px solid #000;">
+                    <div style="display: flex; border-bottom: 1px solid #ccc;"><div style="width: 40%; background: #f2f2f2; padding: 3px;">RFC:</div><div style="padding: 3px;">{rfc}</div></div>
+                    <div style="display: flex; border-bottom: 1px solid #ccc;"><div style="width: 40%; background: #f2f2f2; padding: 3px;">Nombre (s):</div><div style="padding: 3px;">{nombre}</div></div>
+                    <div style="display: flex; border-bottom: 1px solid #ccc;"><div style="width: 40%; background: #f2f2f2; padding: 3px;">Primer Apellido:</div><div style="padding: 3px;">{paterno}</div></div>
+                    <div style="display: flex; border-bottom: 1px solid #ccc;"><div style="width: 40%; background: #f2f2f2; padding: 3px;">Segundo Apellido:</div><div style="padding: 3px;">{materno}</div></div>
+                    <div style="display: flex;"><div style="width: 40%; background: #f2f2f2; padding: 3px;">Estatus:</div><div style="padding: 3px; color: green; font-weight: bold;">ACTIVO</div></div>
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 15px;">
+            <div style="background: #e6e6e6; font-size: 11px; font-weight: bold; padding: 3px; border: 1px solid #000;">Datos del domicilio registrado</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; border: 1px solid #000; border-top: none; font-size: 10px;">
+                <div style="padding: 3px; border-right: 1px solid #000; border-bottom: 1px solid #ccc;">Entidad Federativa: <b>{datos.get('Entidad Federativa', 'CDMX')}</b></div>
+                <div style="padding: 3px; border-bottom: 1px solid #ccc;">CP: <b>{limpiar_dato(datos.get('Entidad Federativa', ''), 'CP')}</b></div>
+            </div>
+        </div>
         
-        <div style="background: #13322b; padding: 15px; display: flex; align-items: center; justify-content: space-between;">
-            <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b3/SAT_logo.svg/512px-SAT_logo.svg.png" style="height: 35px; filter: brightness(0) invert(1);">
-            <div style="text-align: right; color: #fff;">
-                <div style="font-size: 10px; font-weight: bold; letter-spacing: 1px;">CÉDULA DE IDENTIFICACIÓN FISCAL</div>
-                <div style="font-size: 8px; opacity: 0.8;">VALIDACIÓN OFICIAL 2026</div>
-            </div>
-        </div>
-
-        <div style="padding: 25px;">
-            <div style="margin-bottom: 25px; border-left: 4px solid #bc955c; padding-left: 15px;">
-                <label style="display: block; font-size: 9px; color: #bc955c; font-weight: bold; margin-bottom: 2px;">RFC</label>
-                <div style="font-size: 20px; font-weight: 900; color: #13322b; letter-spacing: 1px;">{rfc}</div>
-            </div>
-
-            <div style="margin-bottom: 20px;">
-                <label style="display: block; font-size: 9px; color: #666; font-weight: bold; margin-bottom: 4px;">NOMBRE O RAZÓN SOCIAL</label>
-                <div style="font-size: 13px; font-weight: 600; color: #333; line-height: 1.4;">{nombre}</div>
-            </div>
-
-            <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; border: 1px solid #eee; margin-bottom: 20px;">
-                <label style="display: block; font-size: 9px; color: #13322b; font-weight: bold; margin-bottom: 5px;">RÉGIMEN FISCAL VIGENTE</label>
-                <div style="font-size: 11px; color: #444; font-style: italic;">{regimen}</div>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; padding-top: 10px; border-top: 1px solid #f0f0f0;">
-                <div>
-                    <label style="display: block; font-size: 8px; color: #999; font-weight: bold;">ENTIDAD</label>
-                    <div style="font-size: 10px; color: #333;">{entidad}</div>
-                </div>
-                <div style="text-align: right;">
-                    <label style="display: block; font-size: 8px; color: #999; font-weight: bold;">ESTATUS</label>
-                    <div style="font-size: 10px; color: #27ae60; font-weight: bold;">● ACTIVO</div>
-                </div>
-            </div>
-        </div>
-
-        <div style="background: #f4f4f4; padding: 8px; text-align: center; font-size: 8px; color: #aaa; border-top: 1px solid #eee;">
-            La autenticidad de estos datos puede ser verificada mediante el QR original.
+        <div style="font-size: 8px; margin-top: 10px; text-align: justify; color: #555;">
+            Cualquier alteración a este documento será sancionada conforme a las disposiciones fiscales vigentes.
         </div>
     </div>
     """
