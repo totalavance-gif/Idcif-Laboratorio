@@ -1,80 +1,110 @@
-from flask import Flask, request, send_file, render_template
-import io
+from flask import Flask, request, jsonify, render_template, send_file
 import requests
 from bs4 import BeautifulSoup
+import urllib3
+import io
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 
+# Silencio total
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 app = Flask(__name__)
 
-def extraer_desde_sat(idcif):
-    url = f"https://siat.sat.gob.mx/app/qr/faces/pages/mobile/consultas/cmf/consultaDatosTax.jsf?idCIF={idcif}"
-    headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15'}
+def generar_pdf_en_memoria(datos, idcif):
+    packet = io.BytesIO()
+    can = canvas.Canvas(packet, pagesize=letter)
+    can.setFont("Helvetica-Bold", 8)
+    
+    # --- COORDENADAS CALIBRADAS PARA TU PLANTILLA ---
+    # Ajusta estos valores (X, Y) según necesites mover el texto
+    can.drawString(225, 672, datos.get("RFC", ""))
+    can.drawString(225, 658, datos.get("CURP", ""))
+    can.drawString(225, 644, datos.get("Nombre", ""))
+    can.drawString(225, 630, datos.get("Primer Apellido", ""))
+    can.drawString(225, 616, datos.get("Segundo Apellido", ""))
+    
+    # Domicilio (Ejemplo)
+    can.drawString(110, 520, datos.get("Código Postal", ""))
+    can.drawString(220, 520, datos.get("Nombre de Vialidad", ""))
+    
+    can.save()
+    packet.seek(0)
+    
+    # Leer plantilla y fusionar
+    plantilla_path = "plantilla.pdf"
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        datos = {}
-        for li in soup.find_all('li'):
-            texto = li.get_text(strip=True)
-            if ":" in texto:
-                k, v = texto.split(":", 1)
-                datos[k.strip().upper()] = v.strip().upper()
-        return datos
-    except:
+        reader = PdfReader(plantilla_path)
+        overlay = PdfReader(packet)
+        writer = PdfWriter()
+        
+        page = reader.pages[0]
+        page.merge_page(overlay.pages[0])
+        writer.add_page(page)
+        
+        output = io.BytesIO()
+        writer.write(output)
+        output.seek(0)
+        return output
+    except Exception as e:
+        print(f"Error PDF: {e}")
         return None
 
 @app.route('/')
 def home():
-    return "Laboratorio IDCIF Activo. Usa /generar?idcif=TU_ID"
+    return "Laboratorio IDCIF: Motor de Extracción Activo."
 
-@app.route('/generar')
-def generar():
-    idcif = request.args.get('idcif')
-    if not idcif:
-        return "Falta el idCIF", 400
+@app.route('/api/extraer')
+def extraer():
+    rfc = request.args.get('rfc', '').upper().strip()
+    idcif = request.args.get('idcif', '').strip()
+    download = request.args.get('download', 'false').lower() == 'true'
 
-    datos = extraer_desde_sat(idcif)
-    if not datos:
-        return "No se pudo obtener información del SAT", 500
+    if not rfc or not idcif:
+        return jsonify({"status": "error", "message": "Faltan credenciales"}), 400
 
-    # 1. Crear el PDF en memoria (BytesIO)
-    packet = io.BytesIO()
-    can = canvas.Canvas(packet, pagesize=letter)
-    can.setFont("Helvetica-Bold", 9)
-    
-    # --- Coordenadas basadas en tu plantilla.pdf ---
-    can.drawString(200, 672, datos.get("RFC", ""))
-    can.drawString(200, 658, datos.get("CURP", ""))
-    can.drawString(200, 644, datos.get("NOMBRE", ""))
-    # ... agregar más campos según sea necesario
-    
-    can.save()
-    packet.seek(0)
+    url_sat = f"https://siat.sat.gob.mx/app/qr/faces/pages/mobile/validadorqr.jsf?D1=10&D2=1&D3={idcif}_{rfc}"
+    puente_ninja = f"https://api.allorigins.win/get?url={requests.utils.quote(url_sat)}"
 
-    # 2. Leer la plantilla (Asegúrate de que plantilla.pdf esté en tu repo de GitHub)
     try:
-        plantilla_pdf = PdfReader("plantilla.pdf")
-        capa_datos = PdfReader(packet)
-        escritor = PdfWriter()
+        with requests.Session() as s:
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ...'}
+            response = s.get(puente_ninja, headers=headers, timeout=10)
+            
+            contenido = response.json().get('contents', '')
+            if not contenido or "Error 404" in contenido:
+                return jsonify({"status": "not_found"}), 404
 
-        pagina = plantilla_pdf.pages[0]
-        pagina.merge_page(capa_datos.pages[0])
-        escritor.add_page(pagina)
+            soup = BeautifulSoup(contenido, 'html.parser')
+            datos = {}
 
-        output = io.BytesIO()
-        escritor.write(output)
-        output.seek(0)
+            for span in soup.find_all(['span', 'td']):
+                texto = span.get_text(strip=True)
+                if ":" in texto:
+                    partes = texto.split(":", 1)
+                    if len(partes) > 1:
+                        datos[partes[0].strip()] = partes[1].strip()
 
-        return send_file(
-            output,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=f"Constancia_{idcif}.pdf"
-        )
+            if not datos:
+                return jsonify({"status": "ghost_mode"}), 404
+
+            # SI EL USUARIO PIDE EL PDF
+            if download:
+                pdf_resultado = generar_pdf_en_memoria(datos, idcif)
+                if pdf_resultado:
+                    return send_file(
+                        pdf_resultado,
+                        mimetype='application/pdf',
+                        as_attachment=True,
+                        download_name=f"Constancia_{rfc}.pdf"
+                    )
+
+            return jsonify({"status": "success", "datos": datos})
+
     except Exception as e:
-        return f"Error procesando el PDF: {str(e)}", 500
+        return jsonify({"status": "failed", "error": str(e)}), 500
 
-if __name__ == "__main__":
-    app.run(debug=True)
-        
+# Para Vercel
+app = app
+    
